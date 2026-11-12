@@ -1,0 +1,10 @@
+<%- include('partials/header', {title:'Contact Us'}) %>
+<%- include('partials/messages') %>
+<section class="page-hero"><div class="container"><div class="eyebrow">GET IN TOUCH</div><h1>Let's talk about <span>your needs.</span></h1><p>Have a question, project or service request? Reach out to us.</p></div></section>
+<section class="section-pad"><div class="container"><div class="row g-5"><div class="col-lg-5"><h3>Contact information</h3><p class="text-secondary">Choose the channel that works best for you.</p>
+<% if (business.phone) { %><div class="contact-line"><i class="bi bi-telephone"></i><div><small>Call us</small><a href="tel:<%= business.phone %>"><%= business.phone %></a></div></div><% } %>
+<% if (business.email) { %><div class="contact-line"><i class="bi bi-envelope"></i><div><small>Email us</small><a href="mailto:<%= business.email %>"><%= business.email %></a></div></div><% } %>
+<div class="contact-line"><i class="bi bi-geo-alt"></i><div><small>Location</small><span><%= business.location %></span></div></div>
+<% if (business.whatsapp) { %><a href="<%= whatsappLink() %>" target="_blank" rel="noopener" class="btn btn-success mt-4"><i class="bi bi-whatsapp me-2"></i>Chat on WhatsApp</a><% } %>
+</div><div class="col-lg-7"><h3>Send us a message</h3><%- include('partials/enquiry-form') %></div></div></div></section>
+<%- include('partials/footer') %>

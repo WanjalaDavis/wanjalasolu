@@ -1,0 +1,7 @@
+<%- include('partials/header', {title:'Our Services'}) %>
+<%- include('partials/messages') %>
+<section class="page-hero"><div class="container"><div class="eyebrow">WHAT WE OFFER</div><h1>Our <span>Services.</span></h1><p>Explore our digital, creative and technology services. Not sure what you need? Send us an enquiry.</p></div></section>
+<section class="section-pad"><div class="container"><div class="row g-4">
+<% services.forEach(service => { %><div class="col-md-6 col-xl-4"><div class="service-card h-100"><div class="service-icon"><i class="bi <%= service.icon %>"></i></div><div class="small text-orange fw-semibold mb-2"><%= service.category %></div><h5><%= service.title %></h5><p><%= service.short_description %></p><a href="/services/<%= service.slug %>" class="text-link">View details <i class="bi bi-arrow-up-right"></i></a></div></div><% }) %>
+</div></div></section>
+<%- include('partials/footer') %>

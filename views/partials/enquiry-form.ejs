@@ -1,0 +1,12 @@
+<form method="POST" action="/enquiries" class="form-panel">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Full name *</label><input class="form-control" name="full_name" required maxlength="120" autocomplete="name"></div>
+    <div class="col-md-6"><label class="form-label">Email address *</label><input class="form-control" type="email" name="email" required maxlength="190" autocomplete="email"></div>
+    <div class="col-md-6"><label class="form-label">Phone / WhatsApp</label><input class="form-control" name="phone" maxlength="40" autocomplete="tel"></div>
+    <div class="col-md-6"><label class="form-label">Service</label><select class="form-select" name="service_id"><option value="">General enquiry</option><% if (typeof services !== 'undefined') { services.forEach(s => { %><option value="<%= s.id %>" <%= (typeof selectedService !== 'undefined' && String(selectedService)===String(s.id)) ? 'selected' : '' %>><%= s.title %></option><% }) } %></select></div>
+    <div class="col-12"><label class="form-label">Subject *</label><input class="form-control" name="subject" required maxlength="180" placeholder="What do you need help with?"></div>
+    <div class="col-12"><label class="form-label">Tell us more *</label><textarea class="form-control" name="message" rows="5" required minlength="10" maxlength="5000" placeholder="Describe the service or project you need..."></textarea></div>
+    <div class="col-12"><div class="form-text">Please do not include passwords, OTPs, PINs or sensitive identity documents in this form.</div></div>
+    <div class="col-12"><button class="btn btn-orange btn-lg" type="submit">Submit enquiry <i class="bi bi-send ms-2"></i></button></div>
+  </div>
+</form>

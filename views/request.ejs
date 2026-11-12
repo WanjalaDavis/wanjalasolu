@@ -1,0 +1,21 @@
+<%- include('partials/header', {title:'Request a Service'}) %>
+    <%- include('partials/messages') %>
+        <section class="page-hero">
+            <div class="container">
+                <div class="eyebrow">START A PROJECT</div>
+                <h1>Request a <span>Service.</span></h1>
+                <p>Share a few details and we will get back to you.</p>
+            </div>
+        </section>
+        <section class="section-pad">
+            <div class="container">
+                <div class="row justify-content-center">
+                    <div class="col-lg-8">
+                        <%- include('partials/enquiry-form', {selectedService}) %>
+                            <p class="small text-secondary mt-3">Submitting this form allows Wanjala Solutions to
+                                contact you about your enquiry.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+        <%- include('partials/footer') %>

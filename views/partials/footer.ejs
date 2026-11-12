@@ -1,0 +1,32 @@
+</main>
+<footer class="site-footer mt-5">
+  <div class="container py-5">
+    <div class="row g-4">
+      <div class="col-lg-5">
+        <a class="navbar-brand fw-bold" href="/">WANJALA <span>SOLUTIONS.</span></a>
+        <p class="text-secondary mt-3">CODE. BUILD. INNOVATE.<br>Practical digital solutions for individuals, businesses and organisations.</p>
+      </div>
+      <div class="col-6 col-lg-3">
+        <h6>Quick links</h6>
+        <a href="/services">Our services</a><a href="/portfolio">Our portfolio</a><a href="/about">About us</a><a href="/request">Request a service</a>
+      </div>
+      <div class="col-6 col-lg-4">
+        <h6>Contact</h6>
+        <% if (business.phone) { %><a href="tel:<%= business.phone %>"><i class="bi bi-telephone me-2"></i><%= business.phone %></a><% } %>
+        <% if (business.email) { %><a href="mailto:<%= business.email %>"><i class="bi bi-envelope me-2"></i><%= business.email %></a><% } %>
+        <span class="text-secondary"><i class="bi bi-geo-alt me-2"></i><%= business.location %></span>
+      </div>
+    </div>
+    <hr class="border-secondary my-4">
+    <div class="d-flex flex-column flex-md-row justify-content-between gap-2 small text-secondary">
+      <span>© <%= new Date().getFullYear() %> Wanjala Solutions. All rights reserved.</span>
+      <a href="/admin/login">Administrator</a>
+    </div>
+  </div>
+</footer>
+<% if (business.whatsapp) { %>
+<a class="whatsapp-float" href="<%= whatsappLink() %>" target="_blank" rel="noopener" aria-label="Chat with us on WhatsApp"><i class="bi bi-whatsapp"></i></a>
+<% } %>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/js/main.js"></script>
+</body></html>
