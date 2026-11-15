@@ -20,25 +20,44 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const isProduction =
-  process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
+  process.env.NODE_ENV === 'production' ||
+  Boolean(process.env.VERCEL);
+
+// --------------------------------------------------
+// DATABASE SSL CONFIGURATION
+// --------------------------------------------------
 
 const dbHost = process.env.DB_HOST || 'localhost';
 
+// Force TLS on Vercel, even if DB_ENABLE_SSL is missing.
+// Local XAMPP connections remain unencrypted.
 const dbSSL =
-  process.env.DB_ENABLE_SSL === 'true' ||
+  isProduction ||
+    process.env.DB_ENABLE_SSL === 'true' ||
     !['localhost', '127.0.0.1'].includes(dbHost)
     ? { minVersion: 'TLSv1.2' }
     : undefined;
 
-// Production must have a secure session secret.
+// --------------------------------------------------
+// SESSION SECURITY
+// --------------------------------------------------
+
 if (isProduction && !process.env.SESSION_SECRET) {
-  throw new Error('SESSION_SECRET must be configured in production.');
+  throw new Error(
+    'SESSION_SECRET must be configured in production.'
+  );
 }
 
 const sessionSecret =
-  process.env.SESSION_SECRET || 'development-only-change-this-secret';
+  process.env.SESSION_SECRET ||
+  'development-only-change-this-secret';
+
+// --------------------------------------------------
+// UPLOAD DIRECTORY
+// --------------------------------------------------
 
 // Vercel only allows writable filesystem access in /tmp.
+// Local development continues using public/uploads.
 const uploadDir = isProduction
   ? path.join('/tmp', 'wanjala-uploads')
   : path.join(__dirname, 'public', 'uploads');
@@ -52,6 +71,20 @@ fs.mkdirSync(uploadDir, { recursive: true });
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.set('trust proxy', 1);
+
+// Make business details available to every EJS template,
+// including error pages rendered before middleware completes.
+const businessInfo = {
+  phone: process.env.BUSINESS_PHONE || '',
+  email: process.env.BUSINESS_EMAIL || '',
+  whatsapp:
+    process.env.WHATSAPP_NUMBER ||
+    process.env.BUSINESS_PHONE ||
+    '',
+  location: process.env.BUSINESS_LOCATION || 'Kenya'
+};
+
+app.locals.business = businessInfo;
 
 app.use(helmet({
   contentSecurityPolicy: false
@@ -82,11 +115,19 @@ const sessionStore = new MySQLStore({
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME || 'wanjala_solutions',
+
+  // IMPORTANT: The session store has its own database
+  // connection, so SSL must be configured here too.
   ssl: dbSSL,
+
   createDatabaseTable: true,
   clearExpired: true,
   checkExpirationInterval: 900000,
-  expiration: 1000 * 60 * 60 * 8
+  expiration: 1000 * 60 * 60 * 8,
+
+  waitForConnections: true,
+  connectionLimit: 5,
+  queueLimit: 0
 });
 
 app.use(session({
@@ -108,16 +149,7 @@ app.use(session({
 // --------------------------------------------------
 
 app.use((req, res, next) => {
-  res.locals.business = {
-    phone: process.env.BUSINESS_PHONE || '',
-    email: process.env.BUSINESS_EMAIL || '',
-    whatsapp:
-      process.env.WHATSAPP_NUMBER ||
-      process.env.BUSINESS_PHONE ||
-      '',
-    location: process.env.BUSINESS_LOCATION || 'Kenya'
-  };
-
+  res.locals.business = businessInfo;
   res.locals.admin = req.session.admin || null;
   res.locals.flash = req.session.flash || null;
 
@@ -927,7 +959,8 @@ app.use((err, _req, res, _next) => {
     : err.message;
 
   res.status(500).render('error', {
-    message
+    message,
+    business: businessInfo
   });
 });
 
@@ -935,8 +968,6 @@ app.use((err, _req, res, _next) => {
 // LOCAL DEVELOPMENT / VERCEL EXPORT
 // --------------------------------------------------
 
-// Vercel imports the Express app.
-// Local development starts its own HTTP server.
 if (require.main === module) {
   db.query('SELECT 1')
     .then(() => {
