@@ -1,15 +1,12 @@
-﻿
+
 const mysql = require('mysql2/promise');
 
 const host = process.env.DB_HOST || 'localhost';
 
-const remoteDatabase = ![
+const isRemoteDatabase = ![
   'localhost',
   '127.0.0.1'
 ].includes(host);
-
-const sslEnabled =
-  process.env.DB_ENABLE_SSL === 'true' || remoteDatabase;
 
 const pool = mysql.createPool({
   host,
@@ -18,7 +15,10 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME || 'wanjala_solutions',
 
-  ssl: sslEnabled
+  // Enable TLS for TiDB Cloud
+  ssl: (
+    process.env.DB_ENABLE_SSL === 'true' || isRemoteDatabase
+  )
     ? { minVersion: 'TLSv1.2' }
     : undefined,
 
