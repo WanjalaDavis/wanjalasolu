@@ -29,8 +29,6 @@ const isProduction =
 
 const dbHost = process.env.DB_HOST || 'localhost';
 
-// Force TLS on Vercel, even if DB_ENABLE_SSL is missing.
-// Local XAMPP connections remain unencrypted.
 const dbSSL =
   isProduction ||
   process.env.DB_ENABLE_SSL === 'true' ||
@@ -56,8 +54,6 @@ const sessionSecret =
 // UPLOAD DIRECTORY
 // --------------------------------------------------
 
-// Vercel only allows writable filesystem access in /tmp.
-// Local development continues using public/uploads.
 const uploadDir = isProduction
   ? path.join('/tmp', 'wanjala-uploads')
   : path.join(__dirname, 'public', 'uploads');
@@ -72,8 +68,6 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.set('trust proxy', 1);
 
-// Make business details available to every EJS template,
-// including error pages rendered before middleware completes.
 const businessInfo = {
   phone: process.env.BUSINESS_PHONE || '',
   email: process.env.BUSINESS_EMAIL || '',
@@ -84,6 +78,8 @@ const businessInfo = {
   location: process.env.BUSINESS_LOCATION || 'Kenya'
 };
 
+// Make business available even when an earlier
+// middleware fails.
 app.locals.business = businessInfo;
 
 app.use(helmet({
@@ -99,36 +95,30 @@ app.use(express.json({
   limit: '30kb'
 }));
 
-// Public website assets.
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Uploaded portfolio images.
 app.use('/uploads', express.static(uploadDir));
 
 // --------------------------------------------------
 // DATABASE SESSION STORE
 // --------------------------------------------------
 
-const sessionStore = new MySQLStore({
-  host: dbHost,
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'wanjala_solutions',
+// IMPORTANT:
+// Reuse the existing database pool from
+// config/database.js.
+//
+// This ensures the session store uses the same
+// TiDB TLS configuration as the main application.
 
-  // IMPORTANT: The session store has its own database
-  // connection, so SSL must be configured here too.
-  ssl: dbSSL,
-
-  createDatabaseTable: true,
-  clearExpired: true,
-  checkExpirationInterval: 900000,
-  expiration: 1000 * 60 * 60 * 8,
-
-  waitForConnections: true,
-  connectionLimit: 5,
-  queueLimit: 0
-});
+const sessionStore = new MySQLStore(
+  {
+    createDatabaseTable: true,
+    clearExpired: true,
+    checkExpirationInterval: 900000,
+    expiration: 1000 * 60 * 60 * 8
+  },
+  db
+);
 
 app.use(session({
   name: 'wanjala.sid',
@@ -281,7 +271,6 @@ async function notifyEnquiry(enquiry) {
     to: process.env.ENQUIRY_TO,
     replyTo: enquiry.email,
     subject: `New website enquiry: ${enquiry.subject}`,
-
     text: `
 Name: ${enquiry.full_name}
 Email: ${enquiry.email}
@@ -293,7 +282,6 @@ ${enquiry.message}
   });
 }
 
-// Safely remove uploaded images from the upload directory.
 function deleteUploadedImage(imageUrl) {
   if (!imageUrl || !imageUrl.startsWith('/uploads/')) {
     return;
@@ -340,7 +328,6 @@ app.get('/', async (_req, res, next) => {
       projects,
       whatsappLink
     });
-
   } catch (e) {
     next(e);
   }
@@ -363,7 +350,6 @@ app.get('/services', async (_req, res, next) => {
       services,
       whatsappLink
     });
-
   } catch (e) {
     next(e);
   }
@@ -387,7 +373,6 @@ app.get('/services/:slug', async (req, res, next) => {
       service: rows[0],
       whatsappLink
     });
-
   } catch (e) {
     next(e);
   }
@@ -405,7 +390,6 @@ app.get('/portfolio', async (_req, res, next) => {
       projects,
       whatsappLink
     });
-
   } catch (e) {
     next(e);
   }
@@ -424,7 +408,6 @@ app.get('/contact', async (_req, res, next) => {
       whatsappLink,
       services
     });
-
   } catch (e) {
     next(e);
   }
@@ -444,7 +427,6 @@ app.get('/request', async (req, res, next) => {
       whatsappLink,
       selectedService: req.query.service || ''
     });
-
   } catch (e) {
     next(e);
   }
@@ -538,7 +520,6 @@ app.post('/enquiries', enquiryLimiter, async (req, res, next) => {
         subject,
         message
       });
-
     } catch (mailError) {
       console.error(
         'Enquiry email notification failed:',
@@ -553,7 +534,6 @@ app.post('/enquiries', enquiryLimiter, async (req, res, next) => {
     };
 
     res.redirect('/request');
-
   } catch (e) {
     next(e);
   }
@@ -606,7 +586,6 @@ app.post('/admin/login', adminLoginLimiter, async (req, res, next) => {
 
       res.redirect('/admin');
     });
-
   } catch (e) {
     next(e);
   }
@@ -648,7 +627,6 @@ app.get('/admin', requireAdmin, async (_req, res, next) => {
       counts,
       recent
     });
-
   } catch (e) {
     next(e);
   }
@@ -672,7 +650,6 @@ app.get('/admin/enquiries', requireAdmin, async (_req, res, next) => {
     res.render('admin/enquiries', {
       enquiries
     });
-
   } catch (e) {
     next(e);
   }
@@ -707,7 +684,6 @@ app.post(
       );
 
       res.redirect('/admin/enquiries');
-
     } catch (e) {
       next(e);
     }
@@ -729,7 +705,6 @@ app.get('/admin/services', requireAdmin, async (_req, res, next) => {
     res.render('admin/services', {
       services
     });
-
   } catch (e) {
     next(e);
   }
@@ -773,7 +748,6 @@ app.post('/admin/services', requireAdmin, async (req, res, next) => {
     };
 
     res.redirect('/admin/services');
-
   } catch (e) {
     if (e.code === 'ER_DUP_ENTRY') {
       req.session.flash = {
@@ -805,7 +779,6 @@ app.post(
       );
 
       res.redirect('/admin/services');
-
     } catch (e) {
       next(e);
     }
@@ -827,7 +800,6 @@ app.get('/admin/portfolio', requireAdmin, async (_req, res, next) => {
     res.render('admin/portfolio', {
       projects
     });
-
   } catch (e) {
     next(e);
   }
@@ -884,7 +856,6 @@ app.post(
       };
 
       res.redirect('/admin/portfolio');
-
     } catch (e) {
       next(e);
     }
@@ -917,7 +888,6 @@ app.post(
       }
 
       res.redirect('/admin/portfolio');
-
     } catch (e) {
       next(e);
     }
