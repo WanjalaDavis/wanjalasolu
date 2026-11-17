@@ -12,6 +12,7 @@ const multer = require('multer');
 const nodemailer = require('nodemailer');
 const fs = require('fs');
 const crypto = require('crypto');
+const cloudinary = require('cloudinary').v2;
 
 const db = require('./config/database');
 const { requireAdmin } = require('./middleware/auth');
@@ -29,12 +30,10 @@ const isProduction =
 
 const dbHost = process.env.DB_HOST || 'localhost';
 
-// Force TLS on Vercel, even if DB_ENABLE_SSL is missing.
-// Local XAMPP connections remain unencrypted.
 const dbSSL =
   isProduction ||
-    process.env.DB_ENABLE_SSL === 'true' ||
-    !['localhost', '127.0.0.1'].includes(dbHost)
+  process.env.DB_ENABLE_SSL === 'true' ||
+  !['localhost', '127.0.0.1'].includes(dbHost)
     ? { minVersion: 'TLSv1.2' }
     : undefined;
 
@@ -52,17 +51,34 @@ const sessionSecret =
   process.env.SESSION_SECRET ||
   'development-only-change-this-secret';
 
+// Cloudinary provides durable image storage for Vercel.
+// Local development continues to use public/uploads.
+const cloudinaryConfigured = Boolean(
+  process.env.CLOUDINARY_CLOUD_NAME &&
+  process.env.CLOUDINARY_API_KEY &&
+  process.env.CLOUDINARY_API_SECRET
+);
+
+if (cloudinaryConfigured) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+    secure: true
+  });
+}
+
 // --------------------------------------------------
 // UPLOAD DIRECTORY
 // --------------------------------------------------
 
-// Vercel only allows writable filesystem access in /tmp.
-// Local development continues using public/uploads.
-const uploadDir = isProduction
-  ? path.join('/tmp', 'wanjala-uploads')
-  : path.join(__dirname, 'public', 'uploads');
+const uploadDir = path.join(__dirname, 'public', 'uploads');
 
-fs.mkdirSync(uploadDir, { recursive: true });
+// Only local development writes uploads to the project filesystem.
+// Vercel uploads are held in memory and transferred to Cloudinary.
+if (!isProduction) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
 
 // --------------------------------------------------
 // APP CONFIGURATION
@@ -72,8 +88,6 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.set('trust proxy', 1);
 
-// Make business details available to every EJS template,
-// including error pages rendered before middleware completes.
 const businessInfo = {
   phone: process.env.BUSINESS_PHONE || '',
   email: process.env.BUSINESS_EMAIL || '',
@@ -84,6 +98,8 @@ const businessInfo = {
   location: process.env.BUSINESS_LOCATION || 'Kenya'
 };
 
+// Make business available even when an earlier
+// middleware fails.
 app.locals.business = businessInfo;
 
 app.use(helmet({
@@ -99,36 +115,30 @@ app.use(express.json({
   limit: '30kb'
 }));
 
-// Public website assets.
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Uploaded portfolio images.
 app.use('/uploads', express.static(uploadDir));
 
 // --------------------------------------------------
 // DATABASE SESSION STORE
 // --------------------------------------------------
 
-const sessionStore = new MySQLStore({
-  host: dbHost,
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'wanjala_solutions',
+// IMPORTANT:
+// Reuse the existing database pool from
+// config/database.js.
+//
+// This ensures the session store uses the same
+// TiDB TLS configuration as the main application.
 
-  // IMPORTANT: The session store has its own database
-  // connection, so SSL must be configured here too.
-  ssl: dbSSL,
-
-  createDatabaseTable: true,
-  clearExpired: true,
-  checkExpirationInterval: 900000,
-  expiration: 1000 * 60 * 60 * 8,
-
-  waitForConnections: true,
-  connectionLimit: 5,
-  queueLimit: 0
-});
+const sessionStore = new MySQLStore(
+  {
+    createDatabaseTable: true,
+    clearExpired: true,
+    checkExpirationInterval: 900000,
+    expiration: 1000 * 60 * 60 * 8
+  },
+  db
+);
 
 app.use(session({
   name: 'wanjala.sid',
@@ -188,23 +198,26 @@ const allowedMime = [
   'image/webp'
 ];
 
-const storage = multer.diskStorage({
+const localDiskStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     cb(null, uploadDir);
   },
 
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-
     const filename =
       `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`;
-
     cb(null, filename);
   }
 });
 
+// Vercel's filesystem is ephemeral. Never save production uploads there.
+const portfolioStorage = isProduction
+  ? multer.memoryStorage()
+  : localDiskStorage;
+
 const upload = multer({
-  storage,
+  storage: portfolioStorage,
   limits: {
     fileSize: Number(process.env.MAX_UPLOAD_MB || 5) * 1024 * 1024
   },
@@ -249,6 +262,10 @@ function whatsappLink(
     : '#';
 }
 
+// Expose this helper to every EJS template, including shared
+// footer partials and error/404 pages that do not pass route locals.
+app.locals.whatsappLink = whatsappLink;
+
 function getMailer() {
   if (
     !process.env.SMTP_HOST ||
@@ -281,7 +298,6 @@ async function notifyEnquiry(enquiry) {
     to: process.env.ENQUIRY_TO,
     replyTo: enquiry.email,
     subject: `New website enquiry: ${enquiry.subject}`,
-
     text: `
 Name: ${enquiry.full_name}
 Email: ${enquiry.email}
@@ -293,25 +309,88 @@ ${enquiry.message}
   });
 }
 
-// Safely remove uploaded images from the upload directory.
-function deleteUploadedImage(imageUrl) {
-  if (!imageUrl || !imageUrl.startsWith('/uploads/')) {
-    return;
-  }
+async function savePortfolioImage(file) {
+  if (!file) return null;
 
-  const filename = path.basename(imageUrl);
-  const filePath = path.resolve(uploadDir, filename);
-  const allowedDirectory = path.resolve(uploadDir) + path.sep;
-
-  if (!filePath.startsWith(allowedDirectory)) {
-    return;
-  }
-
-  fs.unlink(filePath, error => {
-    if (error && error.code !== 'ENOENT') {
-      console.error('Image deletion failed:', error.message);
+  if (isProduction) {
+    if (!cloudinaryConfigured) {
+      const error = new Error(
+        'Portfolio image storage is not configured. Add the Cloudinary environment variables in Vercel.'
+      );
+      error.code = 'CLOUDINARY_NOT_CONFIGURED';
+      throw error;
     }
-  });
+
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: 'wanjala-solutions/portfolio',
+          resource_type: 'image',
+          allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+          unique_filename: true,
+          overwrite: false
+        },
+        (error, uploaded) => {
+          if (error) return reject(error);
+          resolve(uploaded);
+        }
+      );
+
+      stream.end(file.buffer);
+    });
+
+    return result.secure_url;
+  }
+
+  return `/uploads/${file.filename}`;
+}
+
+async function deleteUploadedImage(imageUrl) {
+  if (!imageUrl) return;
+
+  // Delete local development uploads safely.
+  if (imageUrl.startsWith('/uploads/')) {
+    const filename = path.basename(imageUrl);
+    const filePath = path.resolve(uploadDir, filename);
+    const allowedDirectory = path.resolve(uploadDir) + path.sep;
+
+    if (!filePath.startsWith(allowedDirectory)) return;
+
+    try {
+      await fs.promises.unlink(filePath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.error('Local image deletion failed:', error.message);
+      }
+    }
+    return;
+  }
+
+  // Delete only assets hosted in this app's configured Cloudinary account.
+  if (!cloudinaryConfigured) return;
+
+  try {
+    const parsed = new URL(imageUrl);
+    const expectedHost = 'res.cloudinary.com';
+    const expectedPrefix = `/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/`;
+
+    if (parsed.hostname !== expectedHost || !parsed.pathname.startsWith(expectedPrefix)) {
+      return;
+    }
+
+    let publicId = parsed.pathname.slice(expectedPrefix.length);
+    publicId = publicId.split('/').filter(Boolean).filter(part => !/^v\\d+$/.test(part)).join('/');
+    publicId = publicId.replace(/\\.(jpe?g|png|webp)$/i, '');
+
+    if (publicId) {
+      await cloudinary.uploader.destroy(publicId, {
+        resource_type: 'image',
+        invalidate: true
+      });
+    }
+  } catch (error) {
+    console.error('Cloudinary image deletion failed:', error.message);
+  }
 }
 
 // --------------------------------------------------
@@ -340,7 +419,6 @@ app.get('/', async (_req, res, next) => {
       projects,
       whatsappLink
     });
-
   } catch (e) {
     next(e);
   }
@@ -363,7 +441,6 @@ app.get('/services', async (_req, res, next) => {
       services,
       whatsappLink
     });
-
   } catch (e) {
     next(e);
   }
@@ -387,7 +464,6 @@ app.get('/services/:slug', async (req, res, next) => {
       service: rows[0],
       whatsappLink
     });
-
   } catch (e) {
     next(e);
   }
@@ -405,7 +481,6 @@ app.get('/portfolio', async (_req, res, next) => {
       projects,
       whatsappLink
     });
-
   } catch (e) {
     next(e);
   }
@@ -424,7 +499,6 @@ app.get('/contact', async (_req, res, next) => {
       whatsappLink,
       services
     });
-
   } catch (e) {
     next(e);
   }
@@ -444,7 +518,6 @@ app.get('/request', async (req, res, next) => {
       whatsappLink,
       selectedService: req.query.service || ''
     });
-
   } catch (e) {
     next(e);
   }
@@ -538,7 +611,6 @@ app.post('/enquiries', enquiryLimiter, async (req, res, next) => {
         subject,
         message
       });
-
     } catch (mailError) {
       console.error(
         'Enquiry email notification failed:',
@@ -553,7 +625,6 @@ app.post('/enquiries', enquiryLimiter, async (req, res, next) => {
     };
 
     res.redirect('/request');
-
   } catch (e) {
     next(e);
   }
@@ -606,7 +677,6 @@ app.post('/admin/login', adminLoginLimiter, async (req, res, next) => {
 
       res.redirect('/admin');
     });
-
   } catch (e) {
     next(e);
   }
@@ -648,7 +718,6 @@ app.get('/admin', requireAdmin, async (_req, res, next) => {
       counts,
       recent
     });
-
   } catch (e) {
     next(e);
   }
@@ -672,7 +741,6 @@ app.get('/admin/enquiries', requireAdmin, async (_req, res, next) => {
     res.render('admin/enquiries', {
       enquiries
     });
-
   } catch (e) {
     next(e);
   }
@@ -707,7 +775,6 @@ app.post(
       );
 
       res.redirect('/admin/enquiries');
-
     } catch (e) {
       next(e);
     }
@@ -729,7 +796,6 @@ app.get('/admin/services', requireAdmin, async (_req, res, next) => {
     res.render('admin/services', {
       services
     });
-
   } catch (e) {
     next(e);
   }
@@ -773,7 +839,6 @@ app.post('/admin/services', requireAdmin, async (req, res, next) => {
     };
 
     res.redirect('/admin/services');
-
   } catch (e) {
     if (e.code === 'ER_DUP_ENTRY') {
       req.session.flash = {
@@ -805,7 +870,6 @@ app.post(
       );
 
       res.redirect('/admin/services');
-
     } catch (e) {
       next(e);
     }
@@ -827,7 +891,6 @@ app.get('/admin/portfolio', requireAdmin, async (_req, res, next) => {
     res.render('admin/portfolio', {
       projects
     });
-
   } catch (e) {
     next(e);
   }
@@ -865,18 +928,36 @@ app.post(
         return res.redirect('/admin/portfolio');
       }
 
-      await db.execute(
-        `INSERT INTO portfolio
-         (title, category, description, image, project_url)
-         VALUES (?, ?, ?, ?, ?)`,
-        [
-          title,
-          category,
-          description,
-          req.file ? `/uploads/${req.file.filename}` : null,
-          projectUrl || null
-        ]
-      );
+      if (isProduction && req.file && !cloudinaryConfigured) {
+        req.session.flash = {
+          type: 'danger',
+          message: 'Portfolio image uploads are not configured yet. Please configure Cloudinary in Vercel and try again.'
+        };
+        return res.redirect('/admin/portfolio');
+      }
+
+      let imageUrl = null;
+
+      try {
+        imageUrl = await savePortfolioImage(req.file);
+
+        await db.execute(
+          `INSERT INTO portfolio
+           (title, category, description, image, project_url)
+           VALUES (?, ?, ?, ?, ?)`,
+          [
+            title,
+            category,
+            description,
+            imageUrl,
+            projectUrl || null
+          ]
+        );
+      } catch (saveError) {
+        // Avoid leaving an orphaned cloud image if the database insert fails.
+        if (imageUrl) await deleteUploadedImage(imageUrl);
+        throw saveError;
+      }
 
       req.session.flash = {
         type: 'success',
@@ -884,7 +965,6 @@ app.post(
       };
 
       res.redirect('/admin/portfolio');
-
     } catch (e) {
       next(e);
     }
@@ -913,11 +993,10 @@ app.post(
       );
 
       if (rows.length && rows[0].image) {
-        deleteUploadedImage(rows[0].image);
+        await deleteUploadedImage(rows[0].image);
       }
 
       res.redirect('/admin/portfolio');
-
     } catch (e) {
       next(e);
     }
@@ -954,11 +1033,17 @@ app.use((err, _req, res, _next) => {
     return;
   }
 
-  const message = isProduction
+  // Give admins a useful message for upload validation/configuration errors.
+  const isUploadError =
+    err instanceof multer.MulterError ||
+    err.code === 'CLOUDINARY_NOT_CONFIGURED' ||
+    err.message === 'Only JPG, PNG and WEBP images are allowed.';
+
+  const message = isProduction && !isUploadError
     ? 'Something went wrong. Please try again.'
     : err.message;
 
-  res.status(500).render('error', {
+  res.status(err instanceof multer.MulterError ? 400 : 500).render('error', {
     message,
     business: businessInfo
   });
