@@ -262,6 +262,10 @@ function whatsappLink(
     : '#';
 }
 
+// Expose this helper to every EJS template, including shared
+// footer partials and error/404 pages that do not pass route locals.
+app.locals.whatsappLink = whatsappLink;
+
 function getMailer() {
   if (
     !process.env.SMTP_HOST ||
