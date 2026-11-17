@@ -12,6 +12,7 @@ const multer = require('multer');
 const nodemailer = require('nodemailer');
 const fs = require('fs');
 const crypto = require('crypto');
+const cloudinary = require('cloudinary').v2;
 
 const db = require('./config/database');
 const { requireAdmin } = require('./middleware/auth');
@@ -50,15 +51,34 @@ const sessionSecret =
   process.env.SESSION_SECRET ||
   'development-only-change-this-secret';
 
+// Cloudinary provides durable image storage for Vercel.
+// Local development continues to use public/uploads.
+const cloudinaryConfigured = Boolean(
+  process.env.CLOUDINARY_CLOUD_NAME &&
+  process.env.CLOUDINARY_API_KEY &&
+  process.env.CLOUDINARY_API_SECRET
+);
+
+if (cloudinaryConfigured) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+    secure: true
+  });
+}
+
 // --------------------------------------------------
 // UPLOAD DIRECTORY
 // --------------------------------------------------
 
-const uploadDir = isProduction
-  ? path.join('/tmp', 'wanjala-uploads')
-  : path.join(__dirname, 'public', 'uploads');
+const uploadDir = path.join(__dirname, 'public', 'uploads');
 
-fs.mkdirSync(uploadDir, { recursive: true });
+// Only local development writes uploads to the project filesystem.
+// Vercel uploads are held in memory and transferred to Cloudinary.
+if (!isProduction) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
 
 // --------------------------------------------------
 // APP CONFIGURATION
@@ -178,23 +198,26 @@ const allowedMime = [
   'image/webp'
 ];
 
-const storage = multer.diskStorage({
+const localDiskStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     cb(null, uploadDir);
   },
 
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-
     const filename =
       `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`;
-
     cb(null, filename);
   }
 });
 
+// Vercel's filesystem is ephemeral. Never save production uploads there.
+const portfolioStorage = isProduction
+  ? multer.memoryStorage()
+  : localDiskStorage;
+
 const upload = multer({
-  storage,
+  storage: portfolioStorage,
   limits: {
     fileSize: Number(process.env.MAX_UPLOAD_MB || 5) * 1024 * 1024
   },
@@ -282,24 +305,88 @@ ${enquiry.message}
   });
 }
 
-function deleteUploadedImage(imageUrl) {
-  if (!imageUrl || !imageUrl.startsWith('/uploads/')) {
-    return;
-  }
+async function savePortfolioImage(file) {
+  if (!file) return null;
 
-  const filename = path.basename(imageUrl);
-  const filePath = path.resolve(uploadDir, filename);
-  const allowedDirectory = path.resolve(uploadDir) + path.sep;
-
-  if (!filePath.startsWith(allowedDirectory)) {
-    return;
-  }
-
-  fs.unlink(filePath, error => {
-    if (error && error.code !== 'ENOENT') {
-      console.error('Image deletion failed:', error.message);
+  if (isProduction) {
+    if (!cloudinaryConfigured) {
+      const error = new Error(
+        'Portfolio image storage is not configured. Add the Cloudinary environment variables in Vercel.'
+      );
+      error.code = 'CLOUDINARY_NOT_CONFIGURED';
+      throw error;
     }
-  });
+
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: 'wanjala-solutions/portfolio',
+          resource_type: 'image',
+          allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+          unique_filename: true,
+          overwrite: false
+        },
+        (error, uploaded) => {
+          if (error) return reject(error);
+          resolve(uploaded);
+        }
+      );
+
+      stream.end(file.buffer);
+    });
+
+    return result.secure_url;
+  }
+
+  return `/uploads/${file.filename}`;
+}
+
+async function deleteUploadedImage(imageUrl) {
+  if (!imageUrl) return;
+
+  // Delete local development uploads safely.
+  if (imageUrl.startsWith('/uploads/')) {
+    const filename = path.basename(imageUrl);
+    const filePath = path.resolve(uploadDir, filename);
+    const allowedDirectory = path.resolve(uploadDir) + path.sep;
+
+    if (!filePath.startsWith(allowedDirectory)) return;
+
+    try {
+      await fs.promises.unlink(filePath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.error('Local image deletion failed:', error.message);
+      }
+    }
+    return;
+  }
+
+  // Delete only assets hosted in this app's configured Cloudinary account.
+  if (!cloudinaryConfigured) return;
+
+  try {
+    const parsed = new URL(imageUrl);
+    const expectedHost = 'res.cloudinary.com';
+    const expectedPrefix = `/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/`;
+
+    if (parsed.hostname !== expectedHost || !parsed.pathname.startsWith(expectedPrefix)) {
+      return;
+    }
+
+    let publicId = parsed.pathname.slice(expectedPrefix.length);
+    publicId = publicId.split('/').filter(Boolean).filter(part => !/^v\\d+$/.test(part)).join('/');
+    publicId = publicId.replace(/\\.(jpe?g|png|webp)$/i, '');
+
+    if (publicId) {
+      await cloudinary.uploader.destroy(publicId, {
+        resource_type: 'image',
+        invalidate: true
+      });
+    }
+  } catch (error) {
+    console.error('Cloudinary image deletion failed:', error.message);
+  }
 }
 
 // --------------------------------------------------
@@ -837,18 +924,36 @@ app.post(
         return res.redirect('/admin/portfolio');
       }
 
-      await db.execute(
-        `INSERT INTO portfolio
-         (title, category, description, image, project_url)
-         VALUES (?, ?, ?, ?, ?)`,
-        [
-          title,
-          category,
-          description,
-          req.file ? `/uploads/${req.file.filename}` : null,
-          projectUrl || null
-        ]
-      );
+      if (isProduction && req.file && !cloudinaryConfigured) {
+        req.session.flash = {
+          type: 'danger',
+          message: 'Portfolio image uploads are not configured yet. Please configure Cloudinary in Vercel and try again.'
+        };
+        return res.redirect('/admin/portfolio');
+      }
+
+      let imageUrl = null;
+
+      try {
+        imageUrl = await savePortfolioImage(req.file);
+
+        await db.execute(
+          `INSERT INTO portfolio
+           (title, category, description, image, project_url)
+           VALUES (?, ?, ?, ?, ?)`,
+          [
+            title,
+            category,
+            description,
+            imageUrl,
+            projectUrl || null
+          ]
+        );
+      } catch (saveError) {
+        // Avoid leaving an orphaned cloud image if the database insert fails.
+        if (imageUrl) await deleteUploadedImage(imageUrl);
+        throw saveError;
+      }
 
       req.session.flash = {
         type: 'success',
@@ -884,7 +989,7 @@ app.post(
       );
 
       if (rows.length && rows[0].image) {
-        deleteUploadedImage(rows[0].image);
+        await deleteUploadedImage(rows[0].image);
       }
 
       res.redirect('/admin/portfolio');
@@ -924,11 +1029,17 @@ app.use((err, _req, res, _next) => {
     return;
   }
 
-  const message = isProduction
+  // Give admins a useful message for upload validation/configuration errors.
+  const isUploadError =
+    err instanceof multer.MulterError ||
+    err.code === 'CLOUDINARY_NOT_CONFIGURED' ||
+    err.message === 'Only JPG, PNG and WEBP images are allowed.';
+
+  const message = isProduction && !isUploadError
     ? 'Something went wrong. Please try again.'
     : err.message;
 
-  res.status(500).render('error', {
+  res.status(err instanceof multer.MulterError ? 400 : 500).render('error', {
     message,
     business: businessInfo
   });
