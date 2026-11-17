@@ -85,12 +85,19 @@ For Gmail, use Google's supported app-password flow where eligible; do not put y
 1. Set `NODE_ENV=production` and use HTTPS.
 2. Set a unique, long `SESSION_SECRET`.
 3. Use a dedicated MySQL user with only the required database permissions; do not use the MySQL root user in production.
-4. Configure a persistent disk or external object storage for uploaded portfolio images. Some free Node hosting platforms use ephemeral filesystems, which can erase local uploads after redeployment/restart.
+4. **Portfolio image storage:** Vercel uses Cloudinary for durable portfolio uploads. Create a Cloudinary account, then add `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY` and `CLOUDINARY_API_SECRET` to the Vercel project's Environment Variables for Production (and Preview if required). Redeploy after adding them. The values are available in the Cloudinary dashboard. Do not commit these credentials. Local development continues to store images in `public/uploads`; that folder is ignored by Git.
 5. Configure SMTP and verify email delivery.
 6. Add CSRF protection before accepting public production traffic, and consider CAPTCHA or an anti-bot service for public forms.
 7. Keep `.env`, customer enquiries and uploaded private documents out of Git. This starter site does not ask customers to upload identity documents.
 8. Official government portals make the final decisions on applications. Wanjala Solutions is an independent assistance provider, not a government agency.
 9. Back up MySQL regularly and use a managed database if the hosting provider does not offer persistent MySQL.
+
+## Portfolio image storage
+
+- In production, uploaded portfolio images are sent to Cloudinary and the returned secure HTTPS URL is stored in the existing `portfolio.image` column.
+- In local development, images are stored under `public/uploads` and served by Express.
+- Vercel does not provide durable local filesystem storage for user uploads. Do not remove the Cloudinary environment variables once portfolio images have been uploaded.
+- Portfolio image files uploaded before this change to Vercel's temporary `/tmp` directory may already be unavailable. Those older broken images need to be uploaded again from the admin portfolio page; existing portfolio records are not automatically deleted.
 
 ## Notes about free hosting
 
